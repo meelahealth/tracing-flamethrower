@@ -1,0 +1,9 @@
+[package]
+name = "tracing-flamethrower"
+authors = ["ksonny <ksonny@lotrax.org>"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tracing-subscriber = { version = "0.3.0", default-features = false, features = ["registry"] }
+tracing = { version = "0.1.35", default-features = false, features = ["std", "attributes"] }
