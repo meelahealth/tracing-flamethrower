@@ -16,6 +16,7 @@ use tracing_subscriber::{
 pub struct StackLineWriteOptions {
     module_path: bool,
     file_and_line: bool,
+    override_samples: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -182,18 +183,20 @@ impl SpanFrame<TimedFrame> {
         if opts.module_path
             && let Some(module_path) = self.metadata.module_path()
         {
-            write!(w, "{}::", module_path)?;
+            write!(w, "{module_path}::")?;
         }
         write!(w, "{}", self.metadata.name())?;
         if opts.file_and_line {
             if let Some(file) = self.metadata.file() {
-                write!(w, ":{}", file)?;
+                write!(w, ":{file}")?;
             }
             if let Some(line) = self.metadata.line() {
-                write!(w, ":{}", line)?;
+                write!(w, ":{line}")?;
             }
         }
-        write!(w, " {}", self.state.samples)?;
+        let samples = opts.override_samples.unwrap_or(self.state.samples);
+
+        write!(w, " {samples}",)?;
         Ok(())
     }
 }
