@@ -86,10 +86,10 @@ impl<'entry> DoubleEndedIterator for StackIter<'entry> {
 }
 
 #[derive(Debug)]
-enum StackLinesResult {
+enum StackLinesResult<'a> {
     Start {
         root_id: span::Id,
-        metadata: &'static Metadata<'static>,
+        attrs: &'a span::Attributes<'a>,
     },
     Frame {
         root_id: span::Id,
@@ -103,7 +103,7 @@ enum StackLinesResult {
 }
 
 pub trait FlamethrowerSink {
-    fn begin(&self, root_id: &span::Id, metadata: &'static Metadata<'static>);
+    fn begin(&self, root_id: &span::Id, attrs: &span::Attributes<'_>);
     fn frame(
         &self,
         root_id: &span::Id,
@@ -237,7 +237,7 @@ impl<FS: FlamethrowerSink + 'static> FlamethrowerLayer<FS> {
 
     fn handle(&self, storage: &StackLinesStorage, result: StackLinesResult) {
         match result {
-            StackLinesResult::Start { root_id, metadata } => self.sink.begin(&root_id, metadata),
+            StackLinesResult::Start { root_id, attrs } => self.sink.begin(&root_id, attrs),
             StackLinesResult::Frame {
                 root_id,
                 frame,
@@ -270,6 +270,43 @@ impl<FS: FlamethrowerSink + 'static> FlamethrowerLayer<FS> {
 impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'static> Layer<S>
     for FlamethrowerLayer<FS>
 {
+    fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        if attrs.fields().field(self.flame_starter_field).is_some()
+            && let Some(span) = ctx.span(id)
+        {
+            let mut storage = self.storage.lock().unwrap();
+            let mut entry = if let Some(mut entry) = storage.free.pop() {
+                entry.root_id = id.clone();
+                entry
+            } else {
+                StackLines {
+                    root_id: id.clone(),
+                    open: Vec::new(),
+                    tips: HashMap::new(),
+                }
+            };
+            let now = Instant::now();
+            let tip_index = entry
+                .tips
+                .values()
+                .map(|(idx, _)| *idx)
+                .max()
+                .unwrap_or_default()
+                + 1;
+            entry.tips.insert(id.clone(), (tip_index, now));
+            entry.open.push(SpanFrame::new(&span));
+            storage.entries.push(entry);
+
+            self.handle(
+                &storage,
+                StackLinesResult::Start {
+                    root_id: span.id(),
+                    attrs,
+                },
+            );
+        }
+    }
+
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let mut storage = self.storage.lock().unwrap();
@@ -311,42 +348,6 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                     entry.tips.insert(span.id(), (tip_index, now));
                     entry.open.push(SpanFrame::new(&span));
                 }
-            } else if span
-                .metadata()
-                .fields()
-                .field(self.flame_starter_field)
-                .is_some()
-            {
-                let mut entry = if let Some(mut entry) = storage.free.pop() {
-                    entry.root_id = span.id();
-                    entry
-                } else {
-                    StackLines {
-                        root_id: span.id(),
-                        open: Vec::new(),
-                        tips: HashMap::new(),
-                    }
-                };
-                let now = Instant::now();
-                let tip_index = entry
-                    .tips
-                    .values()
-                    .map(|(idx, _)| *idx)
-                    .max()
-                    .unwrap_or_default()
-                    + 1;
-                entry.tips.insert(span.id(), (tip_index, now));
-                entry.open.push(SpanFrame::new(&span));
-                storage.entries.push(entry);
-
-                self.handle(
-                    &storage,
-                    StackLinesResult::Start {
-                        root_id: span.id(),
-                        metadata: span.metadata(),
-                    },
-                );
-            } else {
                 // Untracked event
             }
         }
@@ -432,7 +433,7 @@ mod tests {
     }
 
     impl FlamethrowerSink for DummyFlameSink {
-        fn begin(&self, root_id: &span::Id, _metadata: &'static tracing::Metadata<'static>) {
+        fn begin(&self, root_id: &span::Id, _attrs: &span::Attributes<'_>) {
             let exists = self
                 .bufs
                 .lock()
