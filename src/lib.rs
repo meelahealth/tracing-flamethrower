@@ -93,6 +93,7 @@ enum StackLinesResult {
     Frame {
         root_id: span::Id,
         frame: SpanFrame<TimedFrame>,
+        closed: bool,
     },
     LastFrame {
         root_id: span::Id,
@@ -102,7 +103,13 @@ enum StackLinesResult {
 
 pub trait FlamethrowerSink {
     fn begin(&self, root_id: &span::Id, metadata: &'static Metadata<'static>);
-    fn frame(&self, root_id: &span::Id, stack: StackIter<'_>, frame: SpanFrame<TimedFrame>);
+    fn frame(
+        &self,
+        root_id: &span::Id,
+        stack: StackIter<'_>,
+        frame: SpanFrame<TimedFrame>,
+        closed: bool,
+    );
     fn end(&self, root_id: &span::Id);
 }
 
@@ -228,14 +235,18 @@ impl<FS: FlamethrowerSink + 'static> FlamethrowerLayer<FS> {
     fn handle(&self, storage: &StackLinesStorage, result: StackLinesResult) {
         match result {
             StackLinesResult::Start { root_id, metadata } => self.sink.begin(&root_id, metadata),
-            StackLinesResult::Frame { root_id, frame } => {
+            StackLinesResult::Frame {
+                root_id,
+                frame,
+                closed,
+            } => {
                 if let Some(stack) = storage
                     .entries
                     .iter()
                     .find(|e| e.root_id == root_id)
                     .map(|e| StackIter::new(&frame.parent, &e.open))
                 {
-                    self.sink.frame(&root_id, stack, frame);
+                    self.sink.frame(&root_id, stack, frame, closed);
                 }
             }
             StackLinesResult::LastFrame { root_id, frame } => {
@@ -245,7 +256,7 @@ impl<FS: FlamethrowerSink + 'static> FlamethrowerLayer<FS> {
                     .find(|e| e.root_id == root_id)
                     .map(|e| StackIter::new(&frame.parent, &e.open))
                 {
-                    self.sink.frame(&root_id, stack, frame);
+                    self.sink.frame(&root_id, stack, frame, true);
                 }
                 self.sink.end(&root_id)
             }
@@ -277,7 +288,14 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                     entry.tips.insert(span.id(), (tip_index, now));
                     entry.open.push(SpanFrame::new(&span));
                     let root_id = entry.root_id.clone();
-                    self.handle(&storage, StackLinesResult::Frame { root_id, frame });
+                    self.handle(
+                        &storage,
+                        StackLinesResult::Frame {
+                            root_id,
+                            frame,
+                            closed: false,
+                        },
+                    );
                 } else {
                     // New tip
                     let tip_index = entry
@@ -371,7 +389,14 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                     entry.clear();
                     storage.free.push(entry);
                 } else {
-                    self.handle(&storage, StackLinesResult::Frame { root_id, frame });
+                    self.handle(
+                        &storage,
+                        StackLinesResult::Frame {
+                            root_id,
+                            frame,
+                            closed: true,
+                        },
+                    );
                 }
             } else {
                 unreachable!("Tip not running, yet still open? {:?}", id);
@@ -419,6 +444,7 @@ mod tests {
             root_id: &tracing::span::Id,
             stack: StackIter<'_>,
             frame: SpanFrame<TimedFrame>,
+            closed: bool,
         ) {
             let mut bufs = self.bufs.lock().unwrap();
             let mut buf = bufs
@@ -427,7 +453,7 @@ mod tests {
             frame
                 .write(&mut buf, stack, &StackLineWriteOptions::default())
                 .expect("Failed write");
-            buf.write(b"\n").unwrap();
+            writeln!(&mut buf, " closed:{closed}").expect("Failed write");
         }
 
         fn end(&self, root_id: &tracing::span::Id) {
