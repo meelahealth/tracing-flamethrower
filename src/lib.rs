@@ -14,9 +14,9 @@ use tracing_subscriber::{
 
 #[derive(Default)]
 pub struct StackLineWriteOptions {
-    module_path: bool,
-    file_and_line: bool,
-    override_samples: Option<u32>,
+    pub module_path: bool,
+    pub file_and_line: bool,
+    pub override_samples: Option<u32>,
 }
 
 #[derive(Clone)]
