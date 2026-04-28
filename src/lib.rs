@@ -312,7 +312,7 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                 let frame = &entry.open[frame_index];
                 if let Some((tip_index, instant)) = entry.tips.remove(&frame.id) {
                     // Launched from tip, replace
-                    let samples = (now - instant).as_micros() as u32;
+                    let samples = (now - instant).as_micros().min(1) as u32;
                     let frame = frame.clone().time(tip_index, samples);
                     entry.tips.insert(span.id(), (tip_index, now));
                     entry.open.push(SpanFrame::new(&span));
@@ -355,7 +355,7 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                 let frame = entry
                     .open
                     .remove(frame_index)
-                    .time(tip_index, samples.as_micros() as u32);
+                    .time(tip_index, samples.as_micros().min(1) as u32);
                 let parent = frame
                     .parent
                     .as_ref()
