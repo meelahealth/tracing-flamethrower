@@ -96,9 +96,8 @@ enum StackLinesResult<'a> {
         frame: SpanFrame<TimedFrame>,
         closed: bool,
     },
-    LastFrame {
+    End {
         root_id: span::Id,
-        frame: SpanFrame<TimedFrame>,
     },
 }
 
@@ -252,17 +251,7 @@ impl<FS: FlamethrowerSink + 'static> FlamethrowerLayer<FS> {
                     self.sink.frame(&root_id, stack, frame, closed);
                 }
             }
-            StackLinesResult::LastFrame { root_id, frame } => {
-                if let Some(stack) = storage
-                    .entries
-                    .iter()
-                    .find(|e| e.root_id == root_id)
-                    .map(|e| StackIter::new(&frame.parent, &e.open))
-                {
-                    self.sink.frame(&root_id, stack, frame, true);
-                }
-                self.sink.end(&root_id)
-            }
+            StackLinesResult::End { root_id } => self.sink.end(&root_id),
         }
     }
 }
@@ -358,14 +347,8 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
         let entry = storage
             .entries
             .iter_mut()
-            .enumerate()
-            .find_map(|(index, l)| {
-                l.open
-                    .iter_mut()
-                    .position(|s| &s.id == id)
-                    .map(|i| (index, l, i))
-            });
-        if let Some((index, entry, frame_index)) = entry {
+            .find_map(|e| e.open.iter_mut().position(|s| &s.id == id).map(|i| (e, i)));
+        if let Some((entry, frame_index)) = entry {
             if let Some((tip_index, instant)) = entry.tips.remove(id) {
                 let now = Instant::now();
                 let samples = now - instant;
@@ -381,32 +364,39 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                     if !entry.tips.contains_key(&parent.id) {
                         entry.tips.insert(parent.id.clone(), (tip_index, now));
                     } else {
-                        // Parent already running, merge
+                        // Parent already running, let current tip expire
                     }
                 }
-
                 let root_id = entry.root_id.clone();
-                if entry.tips.is_empty() {
-                    // No parent, no tips, stacklines completed
-                    self.handle(&storage, StackLinesResult::LastFrame { root_id, frame });
-                    let mut entry = storage.entries.remove(index);
-                    entry.clear();
-                    storage.free.push(entry);
-                } else {
-                    self.handle(
-                        &storage,
-                        StackLinesResult::Frame {
-                            root_id,
-                            frame,
-                            closed: true,
-                        },
-                    );
-                }
+                self.handle(
+                    &storage,
+                    StackLinesResult::Frame {
+                        root_id,
+                        frame,
+                        closed: true,
+                    },
+                );
             } else {
                 unreachable!("Tip not running, yet still open? {:?}", id);
             }
         } else {
             // Untracked event
+        }
+    }
+
+    fn on_close(&self, id: span::Id, _ctx: Context<'_, S>) {
+        let mut storage = self.storage.lock().unwrap();
+        let entry = storage
+            .entries
+            .iter_mut()
+            .enumerate()
+            .find_map(|(index, e)| (e.root_id == id).then_some((index, e)));
+        if let Some((index, entry)) = entry {
+            let root_id = entry.root_id.clone();
+            self.handle(&storage, StackLinesResult::End { root_id });
+            let mut entry = storage.entries.remove(index);
+            entry.clear();
+            storage.free.push(entry);
         }
     }
 }
