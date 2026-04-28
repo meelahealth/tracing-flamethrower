@@ -377,7 +377,25 @@ impl<S: Subscriber + for<'span> LookupSpan<'span>, FS: FlamethrowerSink + 'stati
                     },
                 );
             } else {
-                unreachable!("Tip not running, yet still open? {:?}", id);
+                // Eh, tip not running, yet still open?
+                // assume this task was suspended, set samples to 1 and create false tip index
+                let tip_index = entry
+                    .tips
+                    .values()
+                    .map(|(idx, _)| *idx)
+                    .max()
+                    .unwrap_or_default()
+                    + 1;
+                let frame = entry.open.remove(frame_index).time(tip_index, 1);
+                let root_id = entry.root_id.clone();
+                self.handle(
+                    &storage,
+                    StackLinesResult::Frame {
+                        root_id,
+                        frame,
+                        closed: true,
+                    },
+                );
             }
         } else {
             // Untracked event
